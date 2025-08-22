@@ -84,19 +84,94 @@ def check_password():
 def load_data(uploaded_file):
     """Tenta ler um arquivo como Excel e, se falhar, tenta como CSV."""
     try:
-        # Tenta ler como Excel primeiro
         df = pd.read_excel(uploaded_file)
         return df
-    except Exception as e_excel:
-        st.warning(f"Não foi possível ler o arquivo como Excel. Tentando como CSV... (Erro: {e_excel})")
+    except Exception:
         try:
-            # Rebobina o ponteiro do arquivo para o início
             uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file)
             return df
-        except Exception as e_csv:
-            st.error(f"Falha ao ler o arquivo como Excel e como CSV. Verifique o formato do arquivo. (Erro CSV: {e_csv})")
+        except Exception:
+            st.error(f"Falha ao ler o arquivo '{uploaded_file.name}'. Verifique se o formato é Excel (.xlsx) ou CSV (.csv).")
             return None
+
+# --- Funções Auxiliares ---
+def format_problem_type(problem):
+    """Formata o tipo de problema para exibição."""
+    if pd.isna(problem): return "⚪ Não especificado"
+    problem = str(problem).upper()
+    if problem == "QR": return "🔴 Quebra de Requisito"
+    elif problem == "CH": return "🟡 Conflito de Horário"
+    return f"⚪ {problem}"
+
+def format_parecer(parecer):
+    """Formata o parecer para exibição com ícones, com lógica corrigida."""
+    if pd.isna(parecer):
+        return "📝 Pendente"
+    parecer_str = str(parecer).lower()
+    # **CORREÇÃO**: Primeiro checa por termos negativos.
+    if "negado" in parecer_str or "indeferido" in parecer_str:
+        return f"❌ {parecer}"
+    # Somente se não for negativo, checa por termos positivos.
+    elif "aprovado" in parecer_str:
+        return f"✅ {parecer}"
+    # Caso contrário, trata como pendente/neutro.
+    return f"📝 {parecer}"
+
+@st.cache_data
+def to_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Relatorio')
+        workbook = writer.book
+        worksheet = writer.sheets['Relatorio']
+        header_format = workbook.add_format({'bold': True, 'text_wrap': True, 'valign': 'top', 'fg_color': '#D7E4BD', 'border': 1})
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+        for i, col in enumerate(df.columns):
+            column_width = max(df[col].astype(str).map(len).max(), len(str(col))) + 2
+            worksheet.set_column(i, i, min(column_width, 50))
+    return output.getvalue()
+
+def find_and_rename_nusp_column(df, possible_names):
+    normalized_possible_names = [name.lower().strip() for name in possible_names]
+    for col in df.columns:
+        normalized_col = col.lower().strip()
+        if normalized_col in normalized_possible_names or any(keyword in normalized_col for keyword in ['nusp', 'numero usp', 'número usp', 'n° usp']):
+            df.rename(columns={col: "nusp"}, inplace=True)
+            return df
+    raise ValueError(f"Coluna de Número USP não encontrada. Colunas disponíveis: {', '.join(df.columns.tolist())}")
+
+def validate_dataframes(df_consolidado, df_requerimentos):
+    required_cols_consolidado_orig = ['nusp', 'disciplina', 'Ano', 'Semestre', 'problema', 'parecer']
+    required_cols_requerimentos = ['nusp', 'Nome completo']
+    
+    missing_consolidado = [col for col in required_cols_consolidado_orig if col not in df_consolidado.columns]
+    missing_requerimentos = [col for col in required_cols_requerimentos if col not in df_requerimentos.columns]
+    
+    errors = []
+    if missing_consolidado: errors.append(f"Arquivo consolidado: colunas faltando - {', '.join(missing_consolidado)}")
+    if missing_requerimentos: errors.append(f"Arquivo requerimentos: colunas faltando - {', '.join(missing_requerimentos)}")
+    if errors: raise ValueError("\n".join(errors))
+
+def calculate_additional_metrics(alunos_com_historico):
+    metrics = {}
+    if not alunos_com_historico.empty:
+        pareceres = alunos_com_historico['parecer_historico'].str.lower()
+        aprovados = pareceres.str.contains('aprovado', na=False) & ~pareceres.str.contains('indeferido|negado', na=False)
+        negados = pareceres.str.contains('indeferido|negado', na=False)
+        
+        total_aprovados = aprovados.sum()
+        total_negados = negados.sum()
+        total_com_parecer = total_aprovados + total_negados
+        
+        metrics['taxa_aprovacao'] = (total_aprovados / total_com_parecer * 100) if total_com_parecer > 0 else 0
+        metrics['media_pedidos_por_aluno'] = len(alunos_com_historico) / alunos_com_historico['nusp'].nunique()
+        metrics['top_disciplinas'] = alunos_com_historico['disciplina_historico'].value_counts().head(5)
+        if 'Ano_historico' in alunos_com_historico.columns and 'Semestre_historico' in alunos_com_historico.columns:
+            alunos_com_historico['periodo'] = alunos_com_historico['Ano_historico'].astype(str) + '/' + alunos_com_historico['Semestre_historico'].astype(str)
+            metrics['distribuicao_temporal'] = alunos_com_historico['periodo'].value_counts().sort_index()
+    return metrics
 
 # --- Função Principal da Aplicação ---
 def run_app():
@@ -116,25 +191,16 @@ def run_app():
     if not (file_consolidado and file_requerimentos):
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.markdown("""
-            ### 🚀 Bem-vindo ao Sistema de Conferência!
-            Para começar, faça o upload dos dois arquivos na barra lateral.
-            """)
+            st.markdown("### 🚀 Bem-vindo ao Sistema de Conferência!\nPara começar, faça o upload dos dois arquivos na barra lateral.")
             with st.expander("📋 Estrutura esperada dos arquivos"):
-                st.markdown("""
-                **Arquivo Consolidado:** `nusp`, `disciplina`, `Ano`, `Semestre`, `problema`, `parecer`
-                **Arquivo de Requerimentos:** `nusp`, `Nome completo`
-                """)
+                st.markdown("**Arquivo Consolidado:** `nusp`, `disciplina`, `Ano`, `Semestre`, `problema`, `parecer`\n**Arquivo de Requerimentos:** `nusp`, `Nome completo`")
     else:
         try:
             with st.spinner("Processando arquivos... Por favor, aguarde."):
-                # Utiliza a nova função de carregamento robusto
                 df_consolidado = load_data(file_consolidado)
                 df_requerimentos = load_data(file_requerimentos)
 
-                # Verifica se os dataframes foram carregados com sucesso
                 if df_consolidado is None or df_requerimentos is None:
-                    st.error("Um ou ambos os arquivos não puderam ser lidos. Verifique os arquivos e tente novamente.")
                     st.stop()
                 
                 if show_debug:
@@ -155,18 +221,10 @@ def run_app():
                         st.warning(f"⚠️ Removidos {nulos_antes} registros com NUSP inválido do arquivo {nome}")
                     df["nusp"] = df["nusp"].astype(int)
                 
-                cols_to_rename = {
-                    col: f"{col}_historico" 
-                    for col in ['disciplina', 'Ano', 'Semestre', 'problema', 'parecer']
-                }
+                cols_to_rename = {col: f"{col}_historico" for col in ['disciplina', 'Ano', 'Semestre', 'problema', 'parecer']}
                 df_consolidado.rename(columns=cols_to_rename, inplace=True)
 
-                alunos_com_historico = df_requerimentos.merge(
-                    df_consolidado,
-                    on="nusp",
-                    how="inner"
-                )
-                
+                alunos_com_historico = df_requerimentos.merge(df_consolidado, on="nusp", how="inner")
                 metrics = calculate_additional_metrics(alunos_com_historico)
 
             st.markdown("### 📊 Métricas Principais")
@@ -182,7 +240,7 @@ def run_app():
                 st.metric("Quebras de Requisito", total_qr, help="Total de QR no histórico dos alunos recorrentes")
             with col4:
                 total_ch = (alunos_com_historico["problema_historico"].str.upper() == "CH").sum()
-                st.metric("Conflitos de Horário", total_ch, help="Total de CH no histórico dos alunos recorrentes")
+                st.metric("Conflitos de Horário", total_ch, help="Total de CH no histórico dos alunos recorcentes")
             with col5:
                 taxa_aprovacao = metrics.get('taxa_aprovacao', 0)
                 st.metric("Taxa de Aprovação (Hist.)", f"{taxa_aprovacao:.1f}%", help="Percentual de pedidos aprovados no histórico")
@@ -217,7 +275,10 @@ def run_app():
 
                     with st.expander(f"👤 {nome_aluno} (NUSP: {nusp_aluno})"):
                         historico_aluno = df_display[df_display['nusp'] == nusp_aluno].copy()
-                        pedidos_deferidos = historico_aluno[historico_aluno['parecer_historico'].str.lower().str.contains('aprovado', na=False)]
+                        
+                        # Usa a função corrigida aqui também
+                        historico_aluno['parecer_formatado'] = historico_aluno['parecer_historico'].apply(format_parecer)
+                        pedidos_deferidos = historico_aluno[historico_aluno['parecer_formatado'].str.startswith('✅')]
 
                         if not pedidos_deferidos.empty:
                             st.write("##### ✅ Pedidos Deferidos Anteriormente:")
@@ -229,7 +290,6 @@ def run_app():
                         st.write("---")
                         st.write("##### 📜 Histórico Completo de Pedidos:")
                         historico_aluno['problema_formatado'] = historico_aluno['problema_historico'].apply(format_problem_type)
-                        historico_aluno['parecer_formatado'] = historico_aluno['parecer_historico'].apply(format_parecer)
                         cols_historico_completo = ['disciplina_historico', 'Ano_historico', 'Semestre_historico', 'problema_formatado', 'parecer_formatado']
                         st.dataframe(historico_aluno[cols_historico_completo].rename(columns=lambda c: c.replace('_historico', '').replace('_formatado','')).reset_index(drop=True))
 
@@ -237,7 +297,6 @@ def run_app():
                 st.markdown("### 📥 Exportar Relatório Completo")
                 
                 file_name = f"relatorio_historico_completo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                
                 df_export = alunos_com_historico.copy()
                 
                 if export_format == "Excel":
@@ -255,73 +314,6 @@ def run_app():
             st.error(f"❌ **Ocorreu um erro inesperado:**\n\n{e}\n\nVerifique se os arquivos estão no formato correto.")
             if show_debug:
                 st.exception(e)
-
-# --- Funções Auxiliares (mantidas para referência) ---
-def format_problem_type(problem):
-    if pd.isna(problem): return "⚪ Não especificado"
-    problem = str(problem).upper()
-    if problem == "QR": return "🔴 Quebra de Requisito"
-    elif problem == "CH": return "🟡 Conflito de Horário"
-    return f"⚪ {problem}"
-
-def format_parecer(parecer):
-    if pd.isna(parecer): return "📝 Pendente"
-    parecer_str = str(parecer).lower()
-    if "aprovado" in parecer_str: return f"✅ {parecer}"
-    elif "negado" in parecer_str or "indeferido" in parecer_str: return f"❌ {parecer}"
-    return f"📝 {parecer}"
-
-@st.cache_data
-def to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Relatorio')
-        workbook = writer.book
-        worksheet = writer.sheets['Relatorio']
-        header_format = workbook.add_format({'bold': True, 'text_wrap': True, 'valign': 'top', 'fg_color': '#D7E4BD', 'border': 1})
-        for col_num, value in enumerate(df.columns.values):
-            worksheet.write(0, col_num, value, header_format)
-        for i, col in enumerate(df.columns):
-            column_width = max(df[col].astype(str).map(len).max(), len(str(col))) + 2
-            worksheet.set_column(i, i, min(column_width, 50))
-    return output.getvalue()
-
-def find_and_rename_nusp_column(df, possible_names):
-    normalized_possible_names = [name.lower().strip() for name in possible_names]
-    for col in df.columns:
-        normalized_col = col.lower().strip()
-        if normalized_col in normalized_possible_names or any(keyword in normalized_col for keyword in ['nusp', 'numero usp', 'número usp', 'n° usp']):
-            df.rename(columns={col: "nusp"}, inplace=True)
-            return df
-    raise ValueError(f"Coluna de Número USP não encontrada. Colunas disponíveis: {', '.join(df.columns.tolist())}")
-
-def validate_dataframes(df_consolidado, df_requerimentos):
-    # As colunas originais são validadas aqui, antes da renomeação
-    required_cols_consolidado_orig = ['nusp', 'disciplina', 'Ano', 'Semestre', 'problema', 'parecer']
-    required_cols_requerimentos = ['nusp', 'Nome completo']
-    
-    missing_consolidado = [col for col in required_cols_consolidado_orig if col not in df_consolidado.columns]
-    missing_requerimentos = [col for col in required_cols_requerimentos if col not in df_requerimentos.columns]
-    
-    errors = []
-    if missing_consolidado: errors.append(f"Arquivo consolidado: colunas faltando - {', '.join(missing_consolidado)}")
-    if missing_requerimentos: errors.append(f"Arquivo requerimentos: colunas faltando - {', '.join(missing_requerimentos)}")
-    if errors: raise ValueError("\n".join(errors))
-
-def calculate_additional_metrics(alunos_com_historico):
-    metrics = {}
-    if not alunos_com_historico.empty:
-        pareceres = alunos_com_historico['parecer_historico'].str.lower()
-        aprovados = pareceres.str.contains('aprovado', na=False).sum()
-        negados = pareceres.str.contains('negado|indeferido', na=False).sum()
-        total_com_parecer = aprovados + negados
-        metrics['taxa_aprovacao'] = (aprovados / total_com_parecer * 100) if total_com_parecer > 0 else 0
-        metrics['media_pedidos_por_aluno'] = len(alunos_com_historico) / alunos_com_historico['nusp'].nunique()
-        metrics['top_disciplinas'] = alunos_com_historico['disciplina_historico'].value_counts().head(5)
-        if 'Ano_historico' in alunos_com_historico.columns and 'Semestre_historico' in alunos_com_historico.columns:
-            alunos_com_historico['periodo'] = alunos_com_historico['Ano_historico'].astype(str) + '/' + alunos_com_historico['Semestre_historico'].astype(str)
-            metrics['distribuicao_temporal'] = alunos_com_historico['periodo'].value_counts().sort_index()
-    return metrics
 
 # --- Ponto de Entrada da Aplicação ---
 if check_password():
