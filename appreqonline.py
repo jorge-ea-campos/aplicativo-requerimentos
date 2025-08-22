@@ -134,6 +134,11 @@ def to_excel(df):
     return output.getvalue()
 
 def find_and_rename_nusp_column(df, possible_names):
+    # Renomeia também a coluna 'problema' para um padrão, se existir
+    for col in df.columns:
+        if col.lower().strip() == 'problema':
+            df.rename(columns={col: "problema"}, inplace=True)
+
     normalized_possible_names = [name.lower().strip() for name in possible_names]
     for col in df.columns:
         normalized_col = col.lower().strip()
@@ -144,7 +149,8 @@ def find_and_rename_nusp_column(df, possible_names):
 
 def validate_dataframes(df_consolidado, df_requerimentos):
     required_cols_consolidado_orig = ['nusp', 'disciplina', 'Ano', 'Semestre', 'problema', 'parecer']
-    required_cols_requerimentos = ['nusp', 'Nome completo']
+    # **ALTERAÇÃO**: Agora a coluna 'problema' também é obrigatória no arquivo de requerimentos
+    required_cols_requerimentos = ['nusp', 'Nome completo', 'problema']
     
     missing_consolidado = [col for col in required_cols_consolidado_orig if col not in df_consolidado.columns]
     missing_requerimentos = [col for col in required_cols_requerimentos if col not in df_requerimentos.columns]
@@ -193,7 +199,7 @@ def run_app():
         with col2:
             st.markdown("### 🚀 Bem-vindo ao Sistema de Conferência!\nPara começar, faça o upload dos dois arquivos na barra lateral.")
             with st.expander("📋 Estrutura esperada dos arquivos"):
-                st.markdown("**Arquivo Consolidado:** `nusp`, `disciplina`, `Ano`, `Semestre`, `problema`, `parecer`\n**Arquivo de Requerimentos:** `nusp`, `Nome completo`")
+                st.markdown("**Arquivo Consolidado:** `nusp`, `disciplina`, `Ano`, `Semestre`, `problema`, `parecer`\n**Arquivo de Requerimentos:** `nusp`, `Nome completo`, `problema`")
     else:
         try:
             with st.spinner("Processando arquivos... Por favor, aguarde."):
@@ -224,10 +230,14 @@ def run_app():
                 cols_to_rename = {col: f"{col}_historico" for col in ['disciplina', 'Ano', 'Semestre', 'problema', 'parecer']}
                 df_consolidado.rename(columns=cols_to_rename, inplace=True)
 
+                # **ALTERAÇÃO**: Renomeia a coluna 'problema' do arquivo de requerimentos para evitar conflito no merge
+                df_requerimentos.rename(columns={'problema': 'problema_atual'}, inplace=True)
+
                 alunos_com_historico = df_requerimentos.merge(df_consolidado, on="nusp", how="inner")
                 metrics = calculate_additional_metrics(alunos_com_historico)
 
             st.markdown("### 📊 Métricas Principais")
+            # ... (código das métricas permanece o mesmo) ...
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("Total de Requerimentos", len(df_requerimentos), help="Total de pedidos no semestre atual")
@@ -240,15 +250,17 @@ def run_app():
                 st.metric("Quebras de Requisito", total_qr, help="Total de QR no histórico dos alunos recorrentes")
             with col4:
                 total_ch = (alunos_com_historico["problema_historico"].str.upper() == "CH").sum()
-                st.metric("Conflitos de Horário", total_ch, help="Total de CH no histórico dos alunos recorcentes")
+                st.metric("Conflitos de Horário", total_ch, help="Total de CH no histórico dos alunos recorrentes")
             with col5:
                 taxa_aprovacao = metrics.get('taxa_aprovacao', 0)
                 st.metric("Taxa de Aprovação (Hist.)", f"{taxa_aprovacao:.1f}%", help="Percentual de pedidos aprovados no histórico")
+
 
             st.markdown("---")
 
             if not alunos_com_historico.empty:
                 st.markdown("### 📈 Análise Gráfica dos Alunos com Histórico")
+                # ... (código dos gráficos permanece o mesmo) ...
                 col_chart1, col_chart2 = st.columns(2)
                 with col_chart1:
                     st.markdown("##### 📚 Top 5 Disciplinas com Histórico")
@@ -276,13 +288,19 @@ def run_app():
                     with st.expander(f"👤 {nome_aluno} (NUSP: {nusp_aluno})"):
                         historico_aluno = df_display[df_display['nusp'] == nusp_aluno].copy()
                         
-                        # Usa a função corrigida aqui também
+                        # **NOVO**: Exibe o problema do requerimento atual
+                        st.write("##### 📌 Requerimento(s) no Semestre Atual:")
+                        problemas_atuais = historico_aluno[['problema_atual']].drop_duplicates().rename(columns={'problema_atual': 'Problema'})
+                        st.dataframe(problemas_atuais, hide_index=True)
+                        st.write("---")
+
                         historico_aluno['parecer_formatado'] = historico_aluno['parecer_historico'].apply(format_parecer)
                         pedidos_deferidos = historico_aluno[historico_aluno['parecer_formatado'].str.startswith('✅')]
 
                         if not pedidos_deferidos.empty:
                             st.write("##### ✅ Pedidos Deferidos Anteriormente:")
-                            cols_deferidos = ['disciplina_historico', 'Ano_historico', 'Semestre_historico', 'parecer_historico']
+                            # **ALTERAÇÃO**: Adiciona a coluna 'problema_historico'
+                            cols_deferidos = ['disciplina_historico', 'Ano_historico', 'Semestre_historico', 'problema_historico', 'parecer_historico']
                             st.dataframe(pedidos_deferidos[cols_deferidos].rename(columns=lambda c: c.replace('_historico', '')).reset_index(drop=True))
                         else:
                             st.info("Este aluno não possui pedidos deferidos no histórico.")
@@ -318,3 +336,8 @@ def run_app():
 # --- Ponto de Entrada da Aplicação ---
 if check_password():
     run_app()
+
+# --- Ponto de Entrada da Aplicação ---
+if check_password():
+    run_app()
+
