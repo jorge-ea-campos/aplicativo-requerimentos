@@ -62,14 +62,11 @@ def check_password():
     st.title("🔒 Acesso Restrito")
     st.write("Por favor, insira a senha para acessar o sistema.")
     
-    # Usando st.form para um envio mais robusto
     with st.form("login_form"):
-        # Tenta carregar as senhas do st.secrets (ideal para produção)
         try:
             correct_password = st.secrets["passwords"]["senha_mestra"]
         except (AttributeError, KeyError):
-            # Fallback para desenvolvimento local se st.secrets não estiver configurado
-            correct_password = "admin" # Senha padrão para teste local
+            correct_password = "admin" 
 
         password = st.text_input("Senha", type="password")
         submitted = st.form_submit_button("Entrar")
@@ -83,31 +80,45 @@ def check_password():
     
     return False
 
+# --- Função para carregar arquivos de forma robusta ---
+def load_data(uploaded_file):
+    """Tenta ler um arquivo como Excel e, se falhar, tenta como CSV."""
+    try:
+        # Tenta ler como Excel primeiro
+        df = pd.read_excel(uploaded_file)
+        return df
+    except Exception as e_excel:
+        st.warning(f"Não foi possível ler o arquivo como Excel. Tentando como CSV... (Erro: {e_excel})")
+        try:
+            # Rebobina o ponteiro do arquivo para o início
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file)
+            return df
+        except Exception as e_csv:
+            st.error(f"Falha ao ler o arquivo como Excel e como CSV. Verifique o formato do arquivo. (Erro CSV: {e_csv})")
+            return None
+
 # --- Função Principal da Aplicação ---
 def run_app():
-    # --- Cabeçalho Principal ---
     st.markdown('<h1 class="main-header">📋 Sistema de Conferência de Requerimentos de Matrícula</h1>', unsafe_allow_html=True)
 
-    # --- Sidebar para Upload ---
     with st.sidebar:
         st.header("📁 Upload de Arquivos")
         st.markdown("---")
-        file_consolidado = st.file_uploader("**Histórico de Pedidos (consolidado)**", type=["xlsx", "xls"], help="Arquivo: resultado_consolidado.xlsx")
-        file_requerimentos = st.file_uploader("**Pedidos do Semestre Atual (requerimentos)**", type=["xlsx", "xls"], help="Arquivo: lista_requerimentos_final.xlsx")
+        file_consolidado = st.file_uploader("**Histórico de Pedidos (consolidado)**", type=["xlsx", "xls", "csv"], help="Arquivo: resultado_consolidado.xlsx")
+        file_requerimentos = st.file_uploader("**Pedidos do Semestre Atual (requerimentos)**", type=["xlsx", "xls", "csv"], help="Arquivo: lista_requerimentos_final.xlsx")
         st.markdown("---")
         st.info("💡 **Dica:** Os arquivos devem conter uma coluna com o número USP para o cruzamento dos dados.")
         with st.expander("⚙️ Configurações Avançadas"):
             show_debug = st.checkbox("Mostrar informações de debug", value=False)
             export_format = st.selectbox("Formato de exportação", ["Excel", "CSV"])
 
-    # --- Lógica Principal ---
     if not (file_consolidado and file_requerimentos):
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("""
             ### 🚀 Bem-vindo ao Sistema de Conferência!
-            Para começar, faça o upload dos dois arquivos Excel na barra lateral.
-            Após o upload, o sistema irá cruzar os dados, identificar alunos com pedidos anteriores, gerar análises e permitir a exportação dos resultados.
+            Para começar, faça o upload dos dois arquivos na barra lateral.
             """)
             with st.expander("📋 Estrutura esperada dos arquivos"):
                 st.markdown("""
@@ -117,8 +128,14 @@ def run_app():
     else:
         try:
             with st.spinner("Processando arquivos... Por favor, aguarde."):
-                df_consolidado = pd.read_excel(file_consolidado)
-                df_requerimentos = pd.read_excel(file_requerimentos)
+                # Utiliza a nova função de carregamento robusto
+                df_consolidado = load_data(file_consolidado)
+                df_requerimentos = load_data(file_requerimentos)
+
+                # Verifica se os dataframes foram carregados com sucesso
+                if df_consolidado is None or df_requerimentos is None:
+                    st.error("Um ou ambos os arquivos não puderam ser lidos. Verifique os arquivos e tente novamente.")
+                    st.stop()
                 
                 if show_debug:
                     with st.expander("🔍 Debug - Colunas originais"):
@@ -152,7 +169,6 @@ def run_app():
                 
                 metrics = calculate_additional_metrics(alunos_com_historico)
 
-            # --- Exibição das Métricas Principais ---
             st.markdown("### 📊 Métricas Principais")
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
@@ -173,7 +189,6 @@ def run_app():
 
             st.markdown("---")
 
-            # --- Análise Detalhada e Visualizações ---
             if not alunos_com_historico.empty:
                 st.markdown("### 📈 Análise Gráfica dos Alunos com Histórico")
                 col_chart1, col_chart2 = st.columns(2)
@@ -200,7 +215,7 @@ def run_app():
                     nome_aluno = aluno['Nome completo']
                     nusp_aluno = aluno['nusp']
 
-                    with st.expander(f"� {nome_aluno} (NUSP: {nusp_aluno})"):
+                    with st.expander(f"👤 {nome_aluno} (NUSP: {nusp_aluno})"):
                         historico_aluno = df_display[df_display['nusp'] == nusp_aluno].copy()
                         pedidos_deferidos = historico_aluno[historico_aluno['parecer_historico'].str.lower().str.contains('aprovado', na=False)]
 
@@ -218,7 +233,6 @@ def run_app():
                         cols_historico_completo = ['disciplina_historico', 'Ano_historico', 'Semestre_historico', 'problema_formatado', 'parecer_formatado']
                         st.dataframe(historico_aluno[cols_historico_completo].rename(columns=lambda c: c.replace('_historico', '').replace('_formatado','')).reset_index(drop=True))
 
-                # --- Funcionalidade de Download ---
                 st.markdown("---")
                 st.markdown("### 📥 Exportar Relatório Completo")
                 
@@ -229,7 +243,7 @@ def run_app():
                 if export_format == "Excel":
                     excel_data = to_excel(df_export)
                     st.download_button("📥 Baixar como Excel", excel_data, f"{file_name}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                else: # CSV
+                else: 
                     csv_data = df_export.to_csv(index=False).encode('utf-8')
                     st.download_button("📥 Baixar como CSV", csv_data, f"{file_name}.csv", "text/csv")
             else:
@@ -282,18 +296,15 @@ def find_and_rename_nusp_column(df, possible_names):
     raise ValueError(f"Coluna de Número USP não encontrada. Colunas disponíveis: {', '.join(df.columns.tolist())}")
 
 def validate_dataframes(df_consolidado, df_requerimentos):
-    required_cols_consolidado = ['nusp']
+    # As colunas originais são validadas aqui, antes da renomeação
+    required_cols_consolidado_orig = ['nusp', 'disciplina', 'Ano', 'Semestre', 'problema', 'parecer']
     required_cols_requerimentos = ['nusp', 'Nome completo']
     
-    # Valida colunas renomeadas
-    renamed_consolidado_cols = ['disciplina_historico', 'Ano_historico', 'Semestre_historico', 'problema_historico', 'parecer_historico']
-    required_cols_consolidado.extend(renamed_consolidado_cols)
-
-    missing_consolidado = [col for col in required_cols_consolidado if col not in df_consolidado.columns]
+    missing_consolidado = [col for col in required_cols_consolidado_orig if col not in df_consolidado.columns]
     missing_requerimentos = [col for col in required_cols_requerimentos if col not in df_requerimentos.columns]
     
     errors = []
-    if missing_consolidado: errors.append(f"Arquivo consolidado: colunas faltando - {', '.join(c.replace('_historico', '') for c in missing_consolidado)}")
+    if missing_consolidado: errors.append(f"Arquivo consolidado: colunas faltando - {', '.join(missing_consolidado)}")
     if missing_requerimentos: errors.append(f"Arquivo requerimentos: colunas faltando - {', '.join(missing_requerimentos)}")
     if errors: raise ValueError("\n".join(errors))
 
