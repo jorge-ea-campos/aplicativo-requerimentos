@@ -58,26 +58,28 @@ def check_password():
     if st.session_state["password_correct"]:
         return True
 
-    # --- Formulário de Login ---
+    # --- Formulário de Login Otimizado ---
     st.title("🔒 Acesso Restrito")
-    st.write("Por favor, insira suas credenciais para acessar o sistema.")
+    st.write("Por favor, insira a senha para acessar o sistema.")
     
-    # Use st.secrets para armazenar as senhas de forma segura ao implantar
-    # Para desenvolvimento local, podemos definir diretamente no código
-    try:
+    # Usando st.form para um envio mais robusto
+    with st.form("login_form"):
         # Tenta carregar as senhas do st.secrets (ideal para produção)
-        correct_password = st.secrets["passwords"]["senha_mestra"]
-    except:
-        # Fallback para desenvolvimento local se st.secrets não estiver configurado
-        correct_password = "lindo10!" # Defina uma senha padrão aqui
+        try:
+            correct_password = st.secrets["passwords"]["senha_mestra"]
+        except (AttributeError, KeyError):
+            # Fallback para desenvolvimento local se st.secrets não estiver configurado
+            correct_password = "admin" # Senha padrão para teste local
 
-    password = st.text_input("Senha", type="password")
-    if st.button("Entrar"):
-        if password == correct_password:
-            st.session_state["password_correct"] = True
-            st.rerun()
-        else:
-            st.error("Senha incorreta. Tente novamente.")
+        password = st.text_input("Senha", type="password")
+        submitted = st.form_submit_button("Entrar")
+
+        if submitted:
+            if password == correct_password:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("Senha incorreta. Tente novamente.")
     
     return False
 
@@ -198,7 +200,7 @@ def run_app():
                     nome_aluno = aluno['Nome completo']
                     nusp_aluno = aluno['nusp']
 
-                    with st.expander(f"👤 {nome_aluno} (NUSP: {nusp_aluno})"):
+                    with st.expander(f"� {nome_aluno} (NUSP: {nusp_aluno})"):
                         historico_aluno = df_display[df_display['nusp'] == nusp_aluno].copy()
                         pedidos_deferidos = historico_aluno[historico_aluno['parecer_historico'].str.lower().str.contains('aprovado', na=False)]
 
@@ -240,7 +242,7 @@ def run_app():
             if show_debug:
                 st.exception(e)
 
-# --- Funções Auxiliares (mantidas para referência, mas não são mais chamadas diretamente no escopo global) ---
+# --- Funções Auxiliares (mantidas para referência) ---
 def format_problem_type(problem):
     if pd.isna(problem): return "⚪ Não especificado"
     problem = str(problem).upper()
@@ -280,12 +282,18 @@ def find_and_rename_nusp_column(df, possible_names):
     raise ValueError(f"Coluna de Número USP não encontrada. Colunas disponíveis: {', '.join(df.columns.tolist())}")
 
 def validate_dataframes(df_consolidado, df_requerimentos):
-    required_cols_consolidado = ['nusp', 'disciplina_historico', 'Ano_historico', 'Semestre_historico', 'problema_historico', 'parecer_historico']
+    required_cols_consolidado = ['nusp']
     required_cols_requerimentos = ['nusp', 'Nome completo']
+    
+    # Valida colunas renomeadas
+    renamed_consolidado_cols = ['disciplina_historico', 'Ano_historico', 'Semestre_historico', 'problema_historico', 'parecer_historico']
+    required_cols_consolidado.extend(renamed_consolidado_cols)
+
     missing_consolidado = [col for col in required_cols_consolidado if col not in df_consolidado.columns]
     missing_requerimentos = [col for col in required_cols_requerimentos if col not in df_requerimentos.columns]
+    
     errors = []
-    if missing_consolidado: errors.append(f"Arquivo consolidado: colunas faltando - {', '.join(missing_consolidado).replace('_historico', '')}")
+    if missing_consolidado: errors.append(f"Arquivo consolidado: colunas faltando - {', '.join(c.replace('_historico', '') for c in missing_consolidado)}")
     if missing_requerimentos: errors.append(f"Arquivo requerimentos: colunas faltando - {', '.join(missing_requerimentos)}")
     if errors: raise ValueError("\n".join(errors))
 
