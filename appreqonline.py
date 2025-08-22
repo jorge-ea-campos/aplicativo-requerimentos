@@ -49,36 +49,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Função de Autenticação ---
-def check_password():
-    """Retorna True se o usuário estiver logado, False caso contrário."""
-    if "password_correct" not in st.session_state:
-        st.session_state["password_correct"] = False
-
-    if st.session_state["password_correct"]:
-        return True
-
-    # --- Formulário de Login Otimizado ---
-    st.title("🔒 Acesso Restrito")
-    st.write("Por favor, insira a senha para acessar o sistema.")
-    
-    with st.form("login_form"):
-        try:
-            correct_password = st.secrets["passwords"]["senha_mestra"]
-        except (AttributeError, KeyError):
-            correct_password = "admin" 
-
-        password = st.text_input("Senha", type="password")
-        submitted = st.form_submit_button("Entrar")
-
-        if submitted:
-            if password == correct_password:
-                st.session_state["password_correct"] = True
-                st.rerun()
-            else:
-                st.error("Senha incorreta. Tente novamente.")
-    
-    return False
 
 # --- Função para carregar arquivos de forma robusta ---
 def load_data(uploaded_file):
@@ -334,10 +304,32 @@ def run_app():
                 st.exception(e)
 
 # --- Ponto de Entrada da Aplicação ---
-if check_password():
-    run_app()
+# **CORREÇÃO**: Lógica de autenticação reestruturada para evitar erro de formulário duplicado.
 
-# --- Ponto de Entrada da Aplicação ---
-if check_password():
-    run_app()
+# Inicializa o estado da sessão se não existir
+if "password_correct" not in st.session_state:
+    st.session_state["password_correct"] = False
 
+# Se o usuário não estiver logado, mostra o formulário de login
+if not st.session_state["password_correct"]:
+    st.title("🔒 Acesso Restrito")
+    st.write("Por favor, insira a senha para acessar o sistema.")
+    
+    with st.form("login_form"):
+        try:
+            correct_password = st.secrets["passwords"]["senha_mestra"]
+        except (AttributeError, KeyError):
+            correct_password = "admin" 
+
+        password = st.text_input("Senha", type="password")
+        submitted = st.form_submit_button("Entrar")
+
+        if submitted:
+            if password == correct_password:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("Senha incorreta. Tente novamente.")
+# Se o usuário estiver logado, executa o aplicativo principal
+else:
+    run_app()
